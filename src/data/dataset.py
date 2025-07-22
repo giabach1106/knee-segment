@@ -170,6 +170,13 @@ class KneeUltrasoundDataset(Dataset):
         Returns:
             Image as tensor with shape (C, H, W).
         """
+        # Validate input
+        if image is None or image.size == 0:
+            raise ValueError("Cannot convert empty image to tensor")
+            
+        # Ensure image is contiguous in memory
+        image = np.ascontiguousarray(image)
+        
         # Handle different input shapes
         if len(image.shape) == 2:
             # Grayscale image (H, W) -> (1, H, W)
@@ -184,7 +191,10 @@ class KneeUltrasoundDataset(Dataset):
         else:
             image = image.astype(np.float32)
             
-        return torch.from_numpy(image)
+        # Create tensor with proper memory layout
+        tensor = torch.from_numpy(image.copy())
+        
+        return tensor
     
     def _mask_to_tensor(self, mask: np.ndarray) -> torch.Tensor:
         """Convert mask to tensor.
@@ -195,6 +205,13 @@ class KneeUltrasoundDataset(Dataset):
         Returns:
             Mask as tensor with shape (1, H, W).
         """
+        # Validate input
+        if mask is None or mask.size == 0:
+            raise ValueError("Cannot convert empty mask to tensor")
+            
+        # Ensure mask is contiguous in memory
+        mask = np.ascontiguousarray(mask)
+        
         # Convert to binary (0 or 1) 
         # Use adaptive threshold - any non-zero value is positive
         mask = (mask > 0).astype(np.float32)
@@ -203,7 +220,10 @@ class KneeUltrasoundDataset(Dataset):
         if len(mask.shape) == 2:
             mask = mask[np.newaxis, ...]
             
-        return torch.from_numpy(mask)
+        # Create tensor with proper memory layout
+        tensor = torch.from_numpy(mask.copy())
+        
+        return tensor
     
     def get_sample_info(self, idx: int) -> Dict[str, Any]:
         """Get information about a sample without loading it.
@@ -235,66 +255,59 @@ class KneeUltrasoundDataset(Dataset):
 
 
 def get_training_augmentation(
-    rotation_limit: int = 15,
-    scale_limit: float = 0.1,
-    shift_limit: float = 0.1,
-    elastic_alpha: float = 120,
-    elastic_sigma: float = 9,
+    rotation_limit: int = 0,        # NO rotation for medical images
+    scale_limit: float = 0.02,      # Very gentle scale ±2%
+    shift_limit: float = 0.03,      # Very gentle shift ±3%
+    elastic_alpha: float = 0,       # Remove elastic transform
+    elastic_sigma: float = 0,       # Remove elastic transform
     p_flip: float = 0.5,
-    p_rotate: float = 0.5,
-    p_scale: float = 0.5,
-    p_elastic: float = 0.3
+    p_rotate: float = 0.0,          # No rotation
+    p_scale: float = 0.3,           # Reduced probability
+    p_elastic: float = 0.0          # No elastic transform
 ) -> A.Compose:
     """Get augmentation pipeline for training.
     
+    Updated for medical imaging - gentler transforms that preserve anatomical structure.
+    All transforms are applied to BOTH image and mask to maintain alignment.
+    
     Args:
-        rotation_limit: Maximum rotation angle in degrees.
+        rotation_limit: Maximum rotation angle in degrees (disabled for medical).
         scale_limit: Maximum scaling factor.
         shift_limit: Maximum shift as fraction of image size.
-        elastic_alpha: Alpha parameter for elastic transform.
-        elastic_sigma: Sigma parameter for elastic transform.
+        elastic_alpha: Alpha parameter for elastic transform (disabled).
+        elastic_sigma: Sigma parameter for elastic transform (disabled).
         p_flip: Probability of applying flips.
-        p_rotate: Probability of applying rotation.
-        p_scale: Probability of applying scaling.
-        p_elastic: Probability of applying elastic deformation.
+        p_rotate: Probability of applying rotation (disabled).
+        p_scale: Probability of applying scaling/shifting.
+        p_elastic: Probability of applying elastic deformation (disabled).
         
     Returns:
-        Albumentations composition of transforms.
+        Albumentations composition of transforms that work on both image and mask.
     """
     return A.Compose([
-        # Flips
+        # Flips - safe for medical imaging, applied to both image and mask
         A.HorizontalFlip(p=p_flip),
-        A.VerticalFlip(p=p_flip),
+        A.VerticalFlip(p=0.3),  # Less frequent vertical flips
         
-        # Rotation
-        A.Rotate(limit=rotation_limit, p=p_rotate, border_mode=cv2.BORDER_CONSTANT),
-        
-        # Scaling and shifting
+        # Very gentle shifting and scaling - applied to both image and mask
         A.ShiftScaleRotate(
-            shift_limit=shift_limit,
-            scale_limit=scale_limit,
-            rotate_limit=0,  # Already handled by Rotate
+            shift_limit=shift_limit,     # ±3% shift
+            scale_limit=scale_limit,     # ±2% scale
+            rotate_limit=0,              # NO rotation for medical images
             p=p_scale,
             border_mode=cv2.BORDER_CONSTANT
         ),
         
-        # Elastic deformation (as in original U-Net paper)
-        A.ElasticTransform(
-            alpha=elastic_alpha,
-            sigma=elastic_sigma,
-            alpha_affine=0,
-            p=p_elastic
-        ),
-        
-        # Small random brightness/contrast changes
+        # Brightness/contrast - only affects image, not mask
         A.RandomBrightnessContrast(
-            brightness_limit=0.1,
-            contrast_limit=0.1,
-            p=0.3
+            brightness_limit=0.1,        # ±10% brightness
+            contrast_limit=0.1,          # ±10% contrast
+            p=0.4
         ),
         
-        # Small amount of Gaussian noise
-        A.GaussNoise(var_limit=(0, 0.05), p=0.2),
+        # Removed: Rotation (not suitable for medical imaging)
+        # Removed: ElasticTransform (too aggressive for medical)
+        # Removed: GaussNoise (can interfere with medical features)
     ])
 
 

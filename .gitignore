@@ -60,7 +60,7 @@ desktop.ini
 # Project specific
 experiments/
 logs/
-results/
+# results/
 tensorboard/
 mlruns/
 wandb/
@@ -122,3 +122,6 @@ Pipfile.lock
 *.tar
 *.tar.gz
 *.rar 
+
+# Others
+visualize_preprocessing.py

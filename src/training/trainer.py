@@ -63,7 +63,7 @@ class Trainer:
         wandb_project: str = "knee-ultrasound-segmentation",
         wandb_entity: Optional[str] = None,
         checkpoint_interval: int = 5,
-        early_stopping_patience: int = 15
+        early_stopping_patience: int = 1000
     ) -> None:
         self.model = model.to(device)
         self.device = device

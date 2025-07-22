@@ -13,6 +13,7 @@ from datetime import datetime
 
 import torch
 from omegaconf import DictConfig, OmegaConf
+import cv2
 
 from ..models import UNet
 from ..data import create_data_loaders
@@ -49,8 +50,8 @@ class ExperimentConfig:
         "bilinear": True
     })
     training_config: Dict[str, Any] = field(default_factory=lambda: {
-        "num_epochs": 40,
-        "batch_size": 4,
+        "num_epochs": 60,
+        "batch_size": 16,
         "learning_rate": 1e-3,
         "optimizer_type": "adam",
         "loss_function": "combined"
@@ -215,12 +216,22 @@ def run_experiment(
                 num_channels += 1
             config.model_config["n_channels"] = num_channels
             
+        # Adjust num_workers for complex preprocessing
+        data_config = config.data_config.copy()
+        if any("snake_roi" in str(step) for step in config.preprocessing):
+            # Snake ROI processing is complex and can cause multiprocessing issues
+            logger.info("Snake ROI detected - reducing DataLoader workers to avoid tensor sharing issues")
+            num_workers = 0
+        else:
+            num_workers = 4
+        
         # Create data loaders
         train_loader, val_loader, test_loader, split_info = create_data_loaders(
             preprocessing_transform=preprocessing,
             enable_augmentation=config.enable_augmentation,
             batch_size=config.training_config["batch_size"],
-            **config.data_config
+            num_workers=num_workers,
+            **data_config
         )
         
         # Save split information
@@ -273,14 +284,26 @@ def run_experiment(
         for i in range(min(5, len(test_predictions))):
             pred_info = test_predictions[i]
             
-            # Get original image
+            # Get processed image that matches the model input size
             test_dataset = test_loader.dataset
             image_id = test_dataset.image_ids[pred_info["global_idx"]]
-            image = test_dataset._load_image(image_id)
             
-            # Create visualization
+            # Load and process image the same way as during training
+            raw_image = test_dataset._load_image(image_id)
+            raw_mask = test_dataset._load_mask(image_id)
+            
+            # Apply the same preprocessing pipeline as used during training
+            if test_dataset.resize is not None:
+                processed_image = cv2.resize(raw_image, (test_dataset.resize[1], test_dataset.resize[0]))
+            else:
+                processed_image = raw_image
+                
+            if test_dataset.preprocessing is not None:
+                processed_image, _ = test_dataset.preprocessing(processed_image, None)
+            
+            # Create visualization using processed image that matches prediction size
             fig = plot_segmentation_results(
-                image=image,
+                image=processed_image,
                 ground_truth=pred_info["ground_truth"].squeeze(),
                 prediction=pred_info["prediction"].squeeze(),
                 title=f"Test Image {i+1} - {image_id}",

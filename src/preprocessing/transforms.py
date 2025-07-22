@@ -12,6 +12,9 @@ import cv2
 import numpy as np
 from skimage.segmentation import active_contour
 from skimage.filters import gaussian
+from skimage.morphology import remove_small_objects, remove_small_holes
+from skimage.draw import polygon2mask
+from skimage import io
 import torch
 from torch import nn
 
@@ -44,46 +47,34 @@ class Transform(ABC):
 
 
 class CLAHETransform(Transform):
-    """Contrast Limited Adaptive Histogram Equalization.
+    """Contrast Limited Adaptive Histogram Equalization (CLAHE).
     
-    CLAHE improves local contrast in ultrasound images, making fluid-filled
-    lesion areas more distinguishable from surrounding tissue.
+    CLAHE improves local contrast while preventing over-amplification
+    of noise in homogeneous regions.
     
     Args:
-        clip_limit: Threshold for contrast limiting (default: 2.0).
-        tile_grid_size: Size of grid for histogram equalization (default: (8, 8)).
+        clip_limit: Contrast limiting threshold.
+        tile_grid_size: Size of the neighborhood area.
     """
     
     def __init__(self, clip_limit: float = 2.0, tile_grid_size: Tuple[int, int] = (8, 8)) -> None:
         self.clip_limit = clip_limit
         self.tile_grid_size = tile_grid_size
-        self.clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
         
     def __call__(self, image: np.ndarray, mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """Apply CLAHE to the image.
         
         Args:
-            image: Input grayscale image.
-            mask: Optional segmentation mask (passed through unchanged).
+            image: Input image.
+            mask: Optional segmentation mask (unchanged).
             
         Returns:
-            Tuple of (CLAHE-enhanced image, mask).
+            Tuple of (CLAHE-enhanced image, unchanged mask).
         """
-        # Ensure image is uint8
-        if image.dtype != np.uint8:
-            image_uint8 = (image * 255).astype(np.uint8) if image.max() <= 1 else image.astype(np.uint8)
-        else:
-            image_uint8 = image
-            
-        # Apply CLAHE
-        enhanced = self.clahe.apply(image_uint8)
+        clahe = cv2.createCLAHE(clipLimit=self.clip_limit, tileGridSize=self.tile_grid_size)
+        enhanced_image = clahe.apply(image)
+        return enhanced_image, mask
         
-        # Convert back to original scale
-        if image.dtype == np.float32 or image.dtype == np.float64:
-            enhanced = enhanced.astype(image.dtype) / 255.0
-            
-        return enhanced, mask
-    
     def get_params(self) -> Dict[str, Any]:
         """Get CLAHE parameters."""
         return {
@@ -157,121 +148,311 @@ class FixedCrop(Transform):
 
 
 class SnakeROI(Transform):
-    """Snake-based (active contour) ROI extraction.
+    """Active contour (Snake) based ROI extraction for ultrasound images.
     
-    Uses active contour algorithm to automatically find and crop the
-    Region of Interest based on image content.
+    Uses active contour algorithm to automatically find and crop the anatomical
+    Region of Interest by detecting the boundary between ultrasound content
+    and black background/border areas. This method is more robust than simple
+    thresholding as it can handle dark regions within the anatomy.
+    
+    The approach:
+    1. Detect black border regions via thresholding and connectivity analysis
+    2. Initialize snake ellipse around detected content region  
+    3. Evolve snake to fit ROI boundary using edge and smoothness forces
+    4. Mask and crop image to extracted ROI
     
     Args:
-        alpha: Snake length shape parameter (default: 0.015).
-        beta: Snake smoothness shape parameter (default: 10).
-        gamma: Explicit time stepping parameter (default: 0.001).
-        max_iterations: Maximum iterations for snake evolution (default: 2500).
-        convergence: Convergence criteria (default: 0.1).
-        edge_threshold: Threshold for edge detection preprocessing (default: 100).
+        alpha: Snake tension parameter (elasticity/contraction). Lower values
+            allow more expansion. Default: 0.01
+        beta: Snake rigidity parameter (smoothness). Higher values create 
+            smoother contours. Default: 5.0
+        w_edge: Weight for edge attraction forces. Default: 1.0
+        w_line: Weight for line/intensity forces. Default: 0.0
+        gamma: Time stepping parameter. Default: 0.1
+        max_iterations: Maximum snake evolution iterations. Default: 1000
+        convergence: Convergence threshold for early stopping. Default: 0.1
+        intensity_threshold: Threshold for detecting black pixels. Default: 10
+        min_content_size: Minimum size for content regions (removes text). Default: 1000
+        hole_fill_threshold: Size threshold for filling holes. Default: 2000
+        blur_sigma: Gaussian blur sigma for preprocessing. Default: 2.0
+        snake_points: Number of points in snake contour. Default: 200
+        content_padding: Padding factor for snake initialization (0.45 = 90% of region). Default: 0.45
     """
     
     def __init__(
-        self, 
-        alpha: float = 0.015,
-        beta: float = 10,
-        gamma: float = 0.001,
-        max_iterations: int = 2500,
+        self,
+        alpha: float = 0.01,
+        beta: float = 5.0, 
+        w_edge: float = 1.0,
+        w_line: float = 0.0,
+        gamma: float = 0.1,
+        max_iterations: int = 1000,
         convergence: float = 0.1,
-        edge_threshold: float = 100
+        intensity_threshold: int = 10,
+        min_content_size: int = 1000,
+        hole_fill_threshold: int = 2000,
+        blur_sigma: float = 2.0,
+        snake_points: int = 200,
+        content_padding: float = 0.45
     ) -> None:
         self.alpha = alpha
         self.beta = beta
+        self.w_edge = w_edge
+        self.w_line = w_line
         self.gamma = gamma
         self.max_iterations = max_iterations
         self.convergence = convergence
-        self.edge_threshold = edge_threshold
+        self.intensity_threshold = intensity_threshold
+        self.min_content_size = min_content_size
+        self.hole_fill_threshold = hole_fill_threshold
+        self.blur_sigma = blur_sigma
+        self.snake_points = snake_points
+        self.content_padding = content_padding
         
     def __call__(self, image: np.ndarray, mask: Optional[np.ndarray] = None) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         """Apply snake-based ROI extraction.
         
         Args:
-            image: Input grayscale image.
+            image: Input grayscale ultrasound image.
             mask: Optional segmentation mask.
             
         Returns:
-            Tuple of (ROI image, ROI mask).
+            Tuple of (ROI extracted image, cropped mask).
         """
-        # Ensure image is float
-        if image.dtype == np.uint8:
-            img_float = image.astype(np.float32) / 255.0
-        else:
-            img_float = image.astype(np.float32)
+        # Validate input
+        if image is None or image.size == 0:
+            raise ValueError("Input image is empty or None")
             
-        # Apply Gaussian smoothing for snake
-        img_smooth = gaussian(img_float, 3)
+        # Store original shape for consistency checks
+        original_shape = image.shape
         
-        # Initialize snake at image border
-        h, w = img_smooth.shape
-        margin = 10
-        init_snake = np.array([
-            [margin, margin],
-            [w - margin, margin],
-            [w - margin, h - margin],
-            [margin, h - margin]
-        ], dtype=np.float32)
-        
-        # Close the contour
-        init_snake = np.vstack([init_snake, init_snake[0]])
-        
-        # Run active contour
         try:
-            snake = active_contour(
-                img_smooth,
-                init_snake,
-                alpha=self.alpha,
-                beta=self.beta,
-                gamma=self.gamma,
-                max_iterations=self.max_iterations,
-                convergence=self.convergence
+            # Step 1: Detect black border and content region
+            content_mask = self._detect_content_region(image)
+            
+            # Step 2: Find content bounding box for initial cropping
+            coords = np.column_stack(np.nonzero(content_mask))
+            if len(coords) == 0:
+                logger.warning("No content detected, returning original image")
+                return image, mask
+                
+            top_left = coords.min(axis=0)
+            bottom_right = coords.max(axis=0) 
+            r0, c0 = top_left
+            r1, c1 = bottom_right
+            
+            # Add margin for snake initialization
+            margin = 5
+            r0m = max(r0 - margin, 0)
+            r1m = min(r1 + margin, image.shape[0])
+            c0m = max(c0 - margin, 0) 
+            c1m = min(c1 + margin, image.shape[1])
+            
+            # Crop to content region for efficiency
+            image_cropped = image[r0m:r1m, c0m:c1m]
+            
+            # Validate cropped image
+            if image_cropped.size == 0:
+                logger.warning("Cropped region is empty, returning original image")
+                return image, mask
+            
+            # Step 3: Initialize and evolve snake
+            snake = self._run_active_contour(image_cropped)
+            
+            # Step 4: Create ROI mask and crop final image
+            final_image, final_mask = self._apply_snake_crop(
+                image, mask, snake, (r0m, c0m), image_cropped.shape
             )
             
-            # Create mask from snake contour
-            roi_mask = np.zeros(img_smooth.shape, dtype=np.uint8)
-            snake_int = np.array(snake, dtype=np.int32)
-            cv2.fillPoly(roi_mask, [snake_int], 255)
+            # Validate output shape consistency
+            if final_image.shape != original_shape:
+                logger.error(f"Shape mismatch: input {original_shape}, output {final_image.shape}")
+                return image, mask
+                
+            return final_image, final_mask
             
-            # Apply mask to image
-            roi_image = img_float.copy()
-            roi_image[roi_mask == 0] = 0
-            
-            # Find bounding box of ROI
-            y_indices, x_indices = np.where(roi_mask > 0)
-            if len(y_indices) > 0 and len(x_indices) > 0:
-                y_min, y_max = y_indices.min(), y_indices.max() + 1
-                x_min, x_max = x_indices.min(), x_indices.max() + 1
-                
-                # Crop to bounding box
-                roi_image = roi_image[y_min:y_max, x_min:x_max]
-                
-                # Crop mask if provided
-                if mask is not None:
-                    mask = mask[y_min:y_max, x_min:x_max]
-                    
-            # Convert back to original dtype
-            if image.dtype == np.uint8:
-                roi_image = (roi_image * 255).astype(np.uint8)
-                
         except Exception as e:
             logger.warning(f"Snake ROI extraction failed: {e}. Returning original image.")
-            roi_image = image
+            # Ensure we always return the same shape
+            return image, mask
+    
+    def _detect_content_region(self, image: np.ndarray) -> np.ndarray:
+        """Detect content region by removing black border and small objects.
+        
+        Args:
+            image: Input grayscale image.
             
-        return roi_image, mask
+        Returns:
+            Binary mask where True indicates content region.
+        """
+        # Step 1: Threshold to separate content from black background
+        content_mask = image > self.intensity_threshold
+        
+        # Step 2: Remove small objects (text, artifacts)  
+        content_mask_clean = remove_small_objects(
+            content_mask, min_size=self.min_content_size
+        )
+        
+        # Step 3: Fill small holes within content region
+        content_mask_filled = remove_small_holes(
+            content_mask_clean, area_threshold=self.hole_fill_threshold
+        )
+        
+        return content_mask_filled
+    
+    def _initialize_snake(self, image_shape: Tuple[int, int]) -> np.ndarray:
+        """Initialize snake as ellipse within image bounds.
+        
+        Args:
+            image_shape: Shape of the cropped image (height, width).
+            
+        Returns:
+            Initial snake coordinates as (N, 2) array [[y, x], ...].
+        """
+        rows, cols = image_shape
+        center_y, center_x = rows / 2, cols / 2
+        
+        # Create ellipse with padding from edges
+        radius_y = rows * self.content_padding
+        radius_x = cols * self.content_padding
+        
+        theta = np.linspace(0, 2 * np.pi, self.snake_points)
+        init_y = center_y + radius_y * np.sin(theta)
+        init_x = center_x + radius_x * np.cos(theta)
+        
+        init_snake = np.vstack([init_y, init_x]).T
+        
+        return init_snake
+    
+    def _run_active_contour(self, image_cropped: np.ndarray) -> np.ndarray:
+        """Run active contour algorithm on cropped image.
+        
+        Args:
+            image_cropped: Cropped image focused on content region.
+            
+        Returns:
+            Final snake coordinates.
+        """
+        # Normalize and smooth image for snake
+        img_float = image_cropped.astype(float) / 255.0
+        blurred = gaussian(img_float, sigma=self.blur_sigma)
+        
+        # Initialize snake
+        init_snake = self._initialize_snake(blurred.shape)
+        
+        # Run active contour evolution
+        snake = active_contour(
+            blurred,
+            init_snake,
+            alpha=self.alpha,
+            beta=self.beta, 
+            w_edge=self.w_edge,
+            w_line=self.w_line,
+            gamma=self.gamma,
+            max_num_iter=self.max_iterations,
+            convergence=self.convergence
+        )
+        
+        return snake
+    
+    def _apply_snake_crop(
+        self, 
+        original_image: np.ndarray,
+        original_mask: Optional[np.ndarray],
+        snake: np.ndarray,
+        crop_offset: Tuple[int, int],
+        cropped_shape: Tuple[int, int]
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """Apply snake-based cropping to original image and mask.
+        
+        Args:
+            original_image: Original full-size image.
+            original_mask: Original full-size mask.
+            snake: Snake coordinates relative to cropped image.
+            crop_offset: (row_offset, col_offset) of cropped region.
+            cropped_shape: Shape of cropped region.
+            
+        Returns:
+            Tuple of (final ROI image, final ROI mask).
+        """
+        # Store original dimensions for consistent output size
+        original_height, original_width = original_image.shape[:2]
+        
+        # Create snake mask on cropped region
+        snake_mask = polygon2mask(cropped_shape, snake)
+        
+        # Get bounding box of snake mask
+        ys, xs = np.nonzero(snake_mask)
+        if len(ys) == 0 or len(xs) == 0:
+            logger.warning("Snake mask is empty, returning original image")
+            return original_image, original_mask
+        
+        miny, maxy = ys.min(), ys.max()
+        minx, maxx = xs.min(), xs.max()
+        
+        # Adjust coordinates to original image space
+        r0, c0 = crop_offset
+        final_r0 = r0 + miny
+        final_r1 = r0 + maxy + 1
+        final_c0 = c0 + minx  
+        final_c1 = c0 + maxx + 1
+        
+        # Ensure bounds are valid
+        final_r0 = max(0, final_r0)
+        final_r1 = min(original_image.shape[0], final_r1)
+        final_c0 = max(0, final_c0)
+        final_c1 = min(original_image.shape[1], final_c1)
+        
+        # Extract ROI from original image
+        roi_image = original_image[final_r0:final_r1, final_c0:final_c1].copy()
+        
+        # Check if ROI is too small for meaningful processing
+        if roi_image.size == 0 or roi_image.shape[0] < 5 or roi_image.shape[1] < 5:
+            logger.warning("Snake ROI is too small, returning original image")
+            return original_image, original_mask
+        
+        # Apply snake mask to remove background in cropped region
+        if roi_image.size > 0:
+            # Create mask for final cropped region
+            crop_snake_mask = snake_mask[miny:maxy+1, minx:maxx+1]
+            if crop_snake_mask.shape == roi_image.shape:
+                roi_image[~crop_snake_mask] = 0
+        
+        # CRITICAL: Resize back to original dimensions to maintain consistent size
+        # This ensures all images have the same dimensions for DataLoader batching
+        final_image = cv2.resize(roi_image, (original_width, original_height))
+        
+        # Debug logging for tensor shape consistency
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug(f"Snake ROI: input shape {original_image.shape}, output shape {final_image.shape}")
+        
+        # Crop and resize mask if provided
+        final_mask = None
+        if original_mask is not None:
+            roi_mask = original_mask[final_r0:final_r1, final_c0:final_c1]
+            if roi_mask.size > 0:
+                final_mask = cv2.resize(roi_mask, (original_width, original_height), interpolation=cv2.INTER_NEAREST)
+            else:
+                final_mask = original_mask
+        
+        return final_image, final_mask
     
     def get_params(self) -> Dict[str, Any]:
         """Get snake parameters."""
         return {
             "alpha": self.alpha,
             "beta": self.beta,
+            "w_edge": self.w_edge, 
+            "w_line": self.w_line,
             "gamma": self.gamma,
             "max_iterations": self.max_iterations,
             "convergence": self.convergence,
-            "edge_threshold": self.edge_threshold
+            "intensity_threshold": self.intensity_threshold,
+            "min_content_size": self.min_content_size,
+            "hole_fill_threshold": self.hole_fill_threshold,
+            "blur_sigma": self.blur_sigma,
+            "snake_points": self.snake_points,
+            "content_padding": self.content_padding
         }
 
 
