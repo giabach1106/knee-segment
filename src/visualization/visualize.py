@@ -16,7 +16,6 @@ sns.set_palette("husl")
 def plot_segmentation_results(image, ground_truth, prediction, title=None,
                             dice_score=None, iou_score=None, save_path=None, figsize=(15, 5)):
     """Plot segmentation: original, GT, prediction, overlay"""
-    # Handle shapes
     if len(image.shape) == 3:
         image = image.squeeze()
     if len(ground_truth.shape) == 3:
@@ -26,28 +25,23 @@ def plot_segmentation_results(image, ground_truth, prediction, title=None,
         
     fig, axes = plt.subplots(1, 4, figsize=figsize)
     
-    # Original image
     axes[0].imshow(image, cmap='gray')
     axes[0].set_title('Original')
     axes[0].axis('off')
     
-    # Ground truth
     axes[1].imshow(ground_truth, cmap='binary')
     axes[1].set_title('Ground Truth')
     axes[1].axis('off')
     
-    # Prediction
     axes[2].imshow(prediction, cmap='binary')
     axes[2].set_title('Prediction')
     axes[2].axis('off')
     
-    # Overlay
     overlay = create_overlay(image, ground_truth, prediction)
     axes[3].imshow(overlay)
     axes[3].set_title('Overlay (GT: Green, Pred: Red)')
     axes[3].axis('off')
     
-    # Title với metrics
     if title:
         metrics_str = title
         if dice_score is not None:
@@ -67,21 +61,17 @@ def plot_segmentation_results(image, ground_truth, prediction, title=None,
 
 
 def create_overlay(image, ground_truth, prediction, alpha=0.5):
-    """Tạo overlay image: GT=green, pred=red, overlap=yellow"""
-    # Normalize image
+    """Tạo overlay: GT=green, pred=red, overlap=yellow"""
     if image.dtype == np.float32 or image.dtype == np.float64:
         image = (image * 255).astype(np.uint8)
         
-    # Convert to RGB
     if len(image.shape) == 2:
         image_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     else:
         image_rgb = image.copy()
         
-    # Create overlay
     overlay = image_rgb.copy()
     
-    # GT = green, pred = red, overlap = yellow
     gt_mask = ground_truth > 0.5
     pred_mask = prediction > 0.5
     
@@ -89,15 +79,13 @@ def create_overlay(image, ground_truth, prediction, alpha=0.5):
     overlay[pred_mask] = (255, 0, 0)
     overlay[gt_mask & pred_mask] = (255, 255, 0)
     
-    # Blend
     result = cv2.addWeighted(image_rgb, 1-alpha, overlay, alpha, 0)
     return result
 
 
 def plot_metrics_comparison(experiments_data, metric_names=["dice", "iou", "pixel_accuracy"],
                           title="Experiment Comparison", save_path=None, figsize=(12, 8)):
-    """Bar plot comparing metrics across experiments"""
-    # Convert to DataFrame
+    """Bar plot comparing metrics"""
     df_data = []
     for exp_name, metrics in experiments_data.items():
         for metric in metric_names:
@@ -109,10 +97,8 @@ def plot_metrics_comparison(experiments_data, metric_names=["dice", "iou", "pixe
             })
     
     df = pd.DataFrame(df_data)
-    
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Grouped bar plot
     x_pos = np.arange(len(experiments_data))
     width = 0.25
     
@@ -122,7 +108,6 @@ def plot_metrics_comparison(experiments_data, metric_names=["dice", "iou", "pixe
         offset = (i - len(metric_names)/2 + 0.5) * width
         bars = ax.bar(x_pos + offset, metric_data, width, label=metric_label)
         
-        # Add value labels
         for bar in bars:
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height,
@@ -149,17 +134,15 @@ def plot_metrics_comparison(experiments_data, metric_names=["dice", "iou", "pixe
 
 def create_experiment_comparison_plot(baseline_metrics, experiment_metrics, 
                                     save_path=None, figsize=(14, 8)):
-    """Comprehensive comparison với baseline"""
+    """So sánh với baseline"""
     all_experiments = {"Baseline": baseline_metrics}
     all_experiments.update(experiment_metrics)
     
     fig = plt.figure(figsize=figsize)
     
-    # Main comparison
     ax1 = plt.subplot(2, 2, (1, 2))
     plot_metrics_comparison(all_experiments, ax=ax1)
     
-    # Improvement over baseline
     ax2 = plt.subplot(2, 2, 3)
     improvements = {}
     for exp_name, metrics in experiment_metrics.items():
@@ -178,7 +161,6 @@ def create_experiment_comparison_plot(baseline_metrics, experiment_metrics,
     ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
     ax2.grid(True, alpha=0.3)
     
-    # Best performers
     ax3 = plt.subplot(2, 2, 4)
     best_by_metric = {}
     for metric in ["dice", "iou", "pixel_accuracy"]:
@@ -192,7 +174,7 @@ def create_experiment_comparison_plot(baseline_metrics, experiment_metrics,
         }
     
     ax3.axis('off')
-    summary_text = "Best Performers:\n\n"
+    summary_text = "Best:\n\n"
     for metric, data in best_by_metric.items():
         summary_text += f"{metric}: {data['Experiment']} ({data['Score']:.2f}%)\n"
     
@@ -211,11 +193,10 @@ def create_experiment_comparison_plot(baseline_metrics, experiment_metrics,
 
 
 def plot_training_history(history, save_path=None, figsize=(12, 8)):
-    """Plot training history: loss, dice, IoU, LR"""
+    """Plot training history"""
     fig, axes = plt.subplots(2, 2, figsize=figsize)
     axes = axes.ravel()
     
-    # Loss
     if 'train_loss' in history:
         axes[0].plot(history['train_loss'], label='Train')
     if 'val_loss' in history:
@@ -224,25 +205,22 @@ def plot_training_history(history, save_path=None, figsize=(12, 8)):
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     
-    # Dice
     if 'train_dice' in history:
         axes[1].plot(history['train_dice'], label='Train')
     if 'val_dice' in history:
         axes[1].plot(history['val_dice'], label='Validation')
-    axes[1].set_title('Dice Coefficient')
+    axes[1].set_title('Dice')
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
     
-    # IoU
     if 'train_iou' in history:
         axes[2].plot(history['train_iou'], label='Train')
     if 'val_iou' in history:
         axes[2].plot(history['val_iou'], label='Validation')
-    axes[2].set_title('IoU Score')
+    axes[2].set_title('IoU')
     axes[2].legend()
     axes[2].grid(True, alpha=0.3)
     
-    # Learning rate
     if 'learning_rate' in history:
         axes[3].plot(history['learning_rate'])
         axes[3].set_title('Learning Rate')
