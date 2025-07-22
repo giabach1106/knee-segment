@@ -1,0 +1,124 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyTorch
+*.pth
+*.pt
+checkpoint/
+checkpoints/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints
+
+# Virtual environments
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.conda/
+conda-env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Project specific
+experiments/
+logs/
+results/
+tensorboard/
+mlruns/
+wandb/
+*.log
+
+# uv lock file (optional - can be tracked for reproducibility)
+# uv.lock
+
+# Project-specific
+experiments/
+logs/
+results/
+*.png
+*.jpg
+wandb/
+
+# Data (add if you don't want to track images)
+# image/raw/
+# image/mask/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+.cache/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Documentation
+docs/_build/
+site/
+
+# Package management
+poetry.lock
+Pipfile.lock
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Model files (large)
+*.h5
+*.hdf5
+*.onnx
+*.pb
+
+# Datasets
+*.zip
+*.tar
+*.tar.gz
+*.rar 
