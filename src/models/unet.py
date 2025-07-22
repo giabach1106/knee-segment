@@ -1,6 +1,4 @@
-"""U-Net model implementation for image segmentation.
-
-This module implements the U-Net architecture as described in the paper:
+"""
 "U-Net: Convolutional Networks for Biomedical Image Segmentation"
 by Ronneberger et al., 2015.
 """
@@ -47,11 +45,8 @@ class DoubleConv(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the double convolution block.
         
-        Args:
-            x: Input tensor of shape (batch_size, in_channels, height, width).
-            
-        Returns:
-            Output tensor of shape (batch_size, out_channels, height, width).
+        x: Input tensor of shape (batch_size, in_channels, height, width)
+        Output tensor of shape (batch_size, out_channels, height, width)
         """
         return self.double_conv(x)
 
@@ -61,9 +56,8 @@ class Down(nn.Module):
     
     Performs max pooling followed by double convolution.
     
-    Args:
-        in_channels: Number of input channels.
-        out_channels: Number of output channels.
+    in_channels: Number of input channels.
+    out_channels: Number of output channels.
     """
     
     def __init__(self, in_channels: int, out_channels: int) -> None:
@@ -76,11 +70,8 @@ class Down(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the downsampling block.
         
-        Args:
-            x: Input tensor of shape (batch_size, in_channels, height, width).
-            
-        Returns:
-            Output tensor with shape (batch_size, out_channels, height//2, width//2).
+        x: Input tensor of shape (batch_size, in_channels, height, width)
+        Output tensor with shape (batch_size, out_channels, height//2, width//2)
         """
         return self.maxpool_conv(x)
 
@@ -91,11 +82,10 @@ class Up(nn.Module):
     Performs upsampling (transpose convolution or bilinear interpolation)
     followed by concatenation with skip connection and double convolution.
     
-    Args:
-        in_channels: Number of input channels.
-        out_channels: Number of output channels.
-        bilinear: If True, use bilinear interpolation for upsampling.
-            Otherwise, use transpose convolution.
+    in_channels: Number of input channels.
+    out_channels: Number of output channels.
+    bilinear: If True, use bilinear interpolation for upsampling.
+        Otherwise, use transpose convolution.
     """
     
     def __init__(self, in_channels: int, out_channels: int, bilinear: bool = True) -> None:
@@ -113,12 +103,9 @@ class Up(nn.Module):
     def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
         """Forward pass through the upsampling block.
         
-        Args:
-            x1: Input tensor from the previous decoder layer.
-            x2: Skip connection tensor from the corresponding encoder layer.
-            
-        Returns:
-            Output tensor after upsampling, concatenation, and convolution.
+        x1: Input tensor from the previous decoder layer.
+        x2: Skip connection tensor from the corresponding encoder layer.
+        Output tensor after upsampling, concatenation, and convolution.
         """
         x1 = self.up(x1)
         
@@ -148,11 +135,8 @@ class OutConv(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the output convolution.
         
-        Args:
-            x: Input tensor.
-            
-        Returns:
-            Output tensor with shape (batch_size, out_channels, height, width).
+        x: Input tensor.
+        Output tensor with shape (batch_size, out_channels, height, width).
         """
         return self.conv(x)
 
@@ -163,11 +147,10 @@ class UNet(nn.Module):
     The U-Net architecture consists of an encoder (contracting path) and
     decoder (expanding path) with skip connections between corresponding levels.
     
-    Args:
-        n_channels: Number of input channels (e.g., 1 for grayscale, 3 for RGB).
-        n_classes: Number of output classes for segmentation.
-        bilinear: If True, use bilinear upsampling. Otherwise, use transpose conv.
-        base_features: Number of features in the first layer. Doubled at each level.
+    n_channels: Number of input channels (e.g., 1 for grayscale, 3 for RGB).
+    n_classes: Number of output classes for segmentation.
+    bilinear: If True, use bilinear upsampling. Otherwise, use transpose conv.
+    base_features: Number of features in the first layer. Doubled at each level.
         
     Example:
         >>> model = UNet(n_channels=1, n_classes=1)  # Binary segmentation
@@ -191,7 +174,7 @@ class UNet(nn.Module):
         # Calculate feature sizes for each layer
         features = base_features
         
-        # Encoder path
+        # Encoder 
         self.inc = DoubleConv(n_channels, features)
         self.down1 = Down(features, features * 2)
         self.down2 = Down(features * 2, features * 4)
@@ -199,7 +182,7 @@ class UNet(nn.Module):
         factor = 2 if bilinear else 1
         self.down4 = Down(features * 8, features * 16 // factor)
         
-        # Decoder path
+        # Decoder 
         self.up1 = Up(features * 16, features * 8 // factor, bilinear)
         self.up2 = Up(features * 8, features * 4 // factor, bilinear)
         self.up3 = Up(features * 4, features * 2 // factor, bilinear)
@@ -209,13 +192,10 @@ class UNet(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass through the U-Net.
         
-        Args:
-            x: Input tensor of shape (batch_size, n_channels, height, width).
-            
-        Returns:
-            Output tensor of shape (batch_size, n_classes, height, width).
-            For binary segmentation with n_classes=1, apply sigmoid activation
-            to get probabilities.
+        x: Input tensor of shape (batch_size, n_channels, height, width).
+        Output tensor of shape (batch_size, n_classes, height, width).
+        For binary segmentation with n_classes=1, apply sigmoid activation
+        to get probabilities.
         """
         # Encoder
         x1 = self.inc(x)
@@ -237,7 +217,6 @@ class UNet(nn.Module):
     def get_num_params(self) -> int:
         """Get the total number of trainable parameters.
         
-        Returns:
-            Total number of trainable parameters in the model.
+        Total number of trainable parameters in the model.
         """
         return sum(p.numel() for p in self.parameters() if p.requires_grad) 
